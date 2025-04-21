@@ -13,7 +13,10 @@ which is supposed to be a simple showcase of how to implement huffman on the PC 
 ---- HOW TO USE ----
 
 Simply drag and drop the folder with your raw .BIN files into huffman.py
+
 The python script will then output your data into the output folder.
 
+
 This package includes a version of PCEAS from HuCC - https://github.com/jbrandwood/huc
+
 The .pce file can be built by running the huffman_test.bat batch file
