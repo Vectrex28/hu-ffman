@@ -1,0 +1,449 @@
+                             #[1]   "huffman_test.asm"
+    9                        	
+   10               2000     	  .zp			;; The one, the only... ZEROPAGE!!!
+   11                        	
+   12    F8:2000             	DrawLo:			.ds 1		;; Pointer for the drawing position of the text we're decompressing
+   13    F8:2001             	DrawHi:			.ds 1
+   14    F8:2002             	Decomp_PointerLo:	.ds 1		;; Pointer to the current "cursor" position on the compressed text.
+   15    F8:2003             	Decomp_PointerHi:	.ds 1
+   16    F8:2004             	VDC_current:		.ds 1
+   17    F8:2005             	VDC_status:		.ds 1
+   18                        	
+   19               2200     	  .bss			;; Everything outside the ZP
+   20                        	
+                             #[2]   "include\EQU.asm"
+   21                        	  .include "include/EQU.asm"
+    1               20EE     	CDbios_src	= $20EE		;; Source and Destination addresses in ZP, used by the CD Rom BIOS
+    2               20F0     	CDbios_dest	= $20F0
+    3                        	
+    4                        	; --------
+    5                        	; This block defines names for standard
+    6                        	; devices and equipment on the PC-Engine.
+    7                        	; (they should be self-explanatory...)
+    8                        	;
+    9                        	
+   10                        	    ; ----
+   11                        	    ; VDC (Video Display Controller)
+   12                        	
+   13               0000     	VIDEOPORT    	.equ $0000
+   14                        	
+   15               0000     	VIDEOREG    	.equ VIDEOPORT
+   16               0000     	VIDEOREG_LO  	.equ VIDEOREG
+   17               0001     	VIDEOREG_HI  	.equ VIDEOREG+1
+   18                        	
+   19               0002     	VIDEODATA   	.equ VIDEOPORT+2
+   20               0002     	VIDEODATA_LO	.equ VIDEODATA
+   21               0003     	VIDEODATA_HI	.equ VIDEODATA+1
+   22                        	
+   23                        	
+   24                        	    ; ----
+   25                        	    ; VCE (Video Colour Encoder)
+   26                        	
+   27               0400     	COLOURPORT   	.equ $0400
+   28               0400     	COLOURCTRL   	.equ COLOURPORT
+   29                        	
+   30               0402     	COLOURREG    	.equ COLOURPORT+2
+   31               0402     	COLOURREG_LO 	.equ COLOURREG
+   32               0403     	COLOURREG_HI 	.equ COLOURREG+1
+   33                        	
+   34               0404     	COLOURDATA     	.equ COLOURPORT+4
+   35               0404     	COLOURDATA_LO  	.equ COLOURDATA
+   36               0405     	COLOURDATA_HI 	.equ COLOURDATA+1
+   37                        	
+   38                        	    ; ----
+   39                        	    ; PSG (Programmable Sound Generator)
+   40                        	
+   41               0800     	psgport      	.equ $0800
+   42               0800     	psg_ch       	.equ psgport
+   43               0801     	psg_mainvol  	.equ psgport+1
+   44               0802     	psg_freqlo   	.equ psgport+2
+   45               0803     	psg_freqhi   	.equ psgport+3
+   46               0804     	psg_ctrl     	.equ psgport+4
+   47               0805     	psg_pan      	.equ psgport+5
+   48               0806     	psg_wave     	.equ psgport+6
+   49               0807     	psg_noise   	.equ psgport+7
+   50               0808     	psg_lfofreq  	.equ psgport+8
+   51               0809     	psg_lfoctrl  	.equ psgport+9
+   52                        	
+   53                        	
+   54                        	    ; ----
+   55                        	    ; TIMER
+   56                        	
+   57               0C00     	TIMERPORT     	.equ $0C00
+   58               0C00     	TIMERCOUNT   	.equ TIMERPORT
+   59               0C01     	TIMERCTRL    	.equ TIMERPORT+1        
+   60                        	
+   61                        	
+   62                        	    ; ----
+   63                        	    ; I/O port
+   64                        	
+   65               1000     	JOYPORT      	.equ $1000
+   66                        	
+   67                        	    ; ----
+   68                        	    ; IRQ ports
+   69                        	
+   70               1400     	IRQPORT      	.equ $1400
+   71               1402     	IRQOFF	     	.equ IRQPORT+2
+   72               1403     	IRQSTATUS    	.equ IRQPORT+3
+   73                        	
+   74                        	
+   75                        	; --------
+   76                        	; This block defines names for macro
+   77                        	; argument types (\?x).
+   78                        	;
+   79                        	
+   80               0000     	ARG_NONE	.equ 0
+   81               0001     	ARG_REG		.equ 1
+   82               0002     	ARG_IMMED	.equ 2
+   83               0003     	ARG_ABS		.equ 3
+   84               0003     	ARG_ABSOLUTE	.equ 3
+   85               0004     	ARG_INDIRECT	.equ 4
+   86               0005     	ARG_STRING	.equ 5
+   87               0006     	ARG_LABEL	.equ 6
+                             #[1]   "huffman_test.asm"
+   22                        	
+   23               E000     	  .code
+   24               0000     	  .bank $0
+   25               E000     	  .org $E000
+   26                        	
+   27    00:E000             	RESET:			;; Reset routine goes here
+   28                        	
+   29    00:E000  78         	  SEI			;; Disable interrupts
+   30    00:E001  D4         	  CSH			;; Gotta go fast
+   31    00:E002  D8         	  CLD			;; Clear decimal mode
+   32                        	
+   33                        		;; Time to map in the I/O and the RAM. No extra ROM banks as it all fits in the 8KB fixed bank.
+   34                        	
+   35    00:E003  A9 FF      	  LDA #$FF		;; Bank $FF - This is the I/O
+   36    00:E005  53 01      	  TAM #0		;; Transfer I/O to Memory Paging Reg 0 ($0000-$1FFF)
+   37    00:E007  AA         	  TAX			;; Transfer A to X
+   38    00:E008  A9 F8      	  LDA #$F8		;; Bank $F8 - RAM
+   39    00:E00A  53 02      	  TAM #1		;; Transfer RAM to Memory Paging Reg 1 ($2000-$3FFF)
+   40                        	
+   41                        		;; Mapping setup complete! Yay!!!
+   42                        	
+   43    00:E00C  9A         	  TXS			;; Setup the Stack Pointer
+   44    00:E00D  AD 00 00   	  LDA VIDEOPORT		;; Load VDC status register (Clear interrupts and interrupts mask, $0000)
+   45    00:E010  A9 07      	  LDA #$07		;; Set one bit...
+   46    00:E012  8D 02 14   	  STA IRQOFF		;; ...In order to disable IRQs in the IRQ Mask for vsync/hysnc ($1402)
+   47    00:E015  8D 03 14   	  STA IRQSTATUS		;; Acknowledge any pending interrupts ($1403)
+   48    00:E018  9C 01 0C   	  STZ TIMERCTRL		;; Store zero in the timer control ($0C01)
+   49                        	
+   50    00:E01B  03 05      	  ST0 #5		;; Select Register #5 of the VDC...
+   51    00:E01D  13 00      	  ST1 #0		;; ...And write $0000 to it
+   52    00:E01F  23 00      	  ST2 #0		;; This turns off the screen, and disables VDC interrupts
+   53                        	
+   54    00:E021  64 00      	  STZ <$00		;; Set ZP $00 to zero
+   55    00:E023  73 00 20 01	  TII $2000,$2001,$1FFF	;; Copy $2000 (ZP $00) to the next value in RAM ($2001) 1FFF times incrementally
+         00:E027  20 FF 1F    
+   56                        	
+   57    00:E02A  44 02      	  BSR Init_VDC
+   58                        	
+   59    00:E02C  80 49      	  BRA Setup_GFX
+   60                        	
+   61                        	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;; It's the VDC Init, innit?
+   62                        	
+   63    00:E02E             	Init_VDC:			;; Basically sets up the VDC with the data below.
+   64                        	
+   65    00:E02E  A9 55      	  LDA #LOW(vdc_table)
+   66    00:E030  85 EE      	  STA <$20EE
+   67    00:E032  A9 E0      	  LDA #HIGH(vdc_table)
+   68    00:E034  85 EF      	  STA <$20EF
+   69    00:E036  C2         	  CLY
+   70    00:E037             	.setupvdcloop
+   71    00:E037  B1 EE      	  LDA [CDbios_src],y
+   72    00:E039  30 14      	  BMI .initdone
+   73    00:E03B  C8         	  INY
+   74    00:E03C  85 04      	  STA <VDC_current
+   75    00:E03E  8D 00 00   	  STA VIDEOREG
+   76    00:E041  B1 EE      	  LDA [CDbios_src],y
+   77    00:E043  C8         	  INY
+   78    00:E044  8D 02 00   	  STA VIDEODATA_LO
+   79    00:E047  B1 EE      	  LDA [CDbios_src],y
+   80    00:E049  C8         	  INY
+   81    00:E04A  8D 03 00   	  STA VIDEODATA_HI
+   82    00:E04D  80 E8      	  BRA .setupvdcloop
+   83    00:E04F             	.initdone
+   84                        	
+   85    00:E04F  A9 04      	  LDA #%00000100
+   86    00:E051  8D 00 04   	  STA COLOURCTRL
+   87                        	
+   88    00:E054  60         	  RTS
+   89                        	
+   90    00:E055             	vdc_table:	; VDC register data
+   91                        	
+   92                        	 ;	.db $05,$00,$00		; CR    control register
+   93    00:E055  06 00 00   		.db $06,$00,$00		; RCR   scanline interrupt counter
+   94    00:E058  07 00 00   		.db $07,$00,$00		; BXR   background horizontal scroll offset
+   95    00:E05B  08 00 00   		.db $08,$00,$00		; BYR        "     vertical     "      "
+   96    00:E05E  09 10 00   		.db $09,$10,$00		; MWR   size of the virtual screen
+   97    00:E061  0A 02 0B   		.db $0A,$02,$0B		; HSR +                 [$02,$0B]
+   98    00:E064  0B 3F 04   		.db $0B,$3F,$04		; HDR | display size    [$3F,$04]
+   99    00:E067  0C 02 0D   		.db $0C,$02,$0D		; VPR |
+  100    00:E06A  0D F0 00   		.db $0D,$F0,$00		; VDW | Y size
+  101    00:E06D  0E 03 00   		.db $0E,$03,$00		; VCR +
+  102    00:E070  0F 10 00   		.db $0F,$10,$00		; DCR   DMA control register
+  103    00:E073  13 00 7F   		.db $13,$00,$7F		; SATB  address of the SATB
+  104    00:E076  FF         		.db -1			; end of table!
+  105                        	
+  106                        		;; Screen is now off, and the RAM is all clear B-)
+  107                        	
+  108    00:E077             	Setup_GFX:
+  109                        	
+  110    00:E077  03 00      	  ST0 #$00			;; This just pops the chars onto VRAM.
+  111    00:E079  13 00      	  ST1 #$00
+  112    00:E07B  23 10      	  ST2 #$10
+  113                        	
+  114    00:E07D  03 02      	  ST0 #$02
+  115    00:E07F  E3 76 E1 02	  TIA background, VIDEODATA_LO, $0600
+         00:E083  00 00 06    
+  116                        	
+  117    00:E086  20 EA E0   	  JSR ClearScreen
+  118                        	
+  119                        	;;;;;;;;;;;;;;;; Here goes the actual Huffman decompression, complete with writing to background
+  120                        	
+  121    00:E089  03 00      	  ST0 #$00
+  122    00:E08B  A9 81      	  LDA #$81
+  123    00:E08D  85 00      	  STA <DrawLo			;; Start at $0081, so that we may see the text
+  124    00:E08F  8D 02 00   	  STA VIDEODATA_LO
+  125    00:E092  64 01      	  STZ <DrawHi
+  126    00:E094  9C 03 00   	  STZ VIDEODATA_HI
+  127                        	
+  128    00:E097  03 02      	  ST0 #$02
+  129                        	
+  130    00:E099  A9 76      	  LDA #LOW(text1)
+  131    00:E09B  85 02      	  STA <Decomp_PointerLo
+  132    00:E09D  A9 E7      	  LDA #HIGH(text1)
+  133    00:E09F  85 03      	  STA <Decomp_PointerHi		;; Load a pointer to the first text's decompression
+  134                        	
+  135    00:E0A1  20 19 E1   	  JSR Decompress_Huffman
+  136                        	
+  137    00:E0A4  03 00      	  ST0 #$00
+  138    00:E0A6  A9 A1      	  LDA #$A1
+  139    00:E0A8  85 00      	  STA <DrawLo			;; Start at $00A1, so that we may see the text - but on the other "page"
+  140    00:E0AA  8D 02 00   	  STA VIDEODATA_LO
+  141    00:E0AD  64 01      	  STZ <DrawHi
+  142    00:E0AF  9C 03 00   	  STZ VIDEODATA_HI
+  143                        	
+  144    00:E0B2  03 02      	  ST0 #$02
+  145                        	
+  146    00:E0B4  A9 65      	  LDA #LOW(text2)
+  147    00:E0B6  85 02      	  STA <Decomp_PointerLo
+  148    00:E0B8  A9 E8      	  LDA #HIGH(text2)
+  149    00:E0BA  85 03      	  STA <Decomp_PointerHi		;; Load a pointer to the second text's decompression
+  150                        	
+  151    00:E0BC  20 19 E1   	  JSR Decompress_Huffman
+  152                        	
+  153    00:E0BF  A9 02      	  LDA #$02
+  154    00:E0C1  8D 00 04   	  STA COLOURPORT
+  155                        	
+  156    00:E0C4  9C 02 04   	  STZ COLOURREG_LO
+  157    00:E0C7  9C 03 04   	  STZ COLOURREG_HI
+  158                        	
+  159    00:E0CA  E3 30 E9 04	  TIA palette, COLOURDATA_LO, $0020
+         00:E0CE  04 20 00    
+  160                        	
+  161    00:E0D1  A9 05      	  LDA #%00000101		;; Palette and display stuff here.
+  162    00:E0D3  8D 02 14   	  STA IRQOFF
+  163    00:E0D6  A9 05      	  LDA #5
+  164    00:E0D8  85 04      	  STA <VDC_current
+  165    00:E0DA  8D 00 00   	  STA VIDEOREG
+  166    00:E0DD  13 CC      	  ST1 #$CC
+  167    00:E0DF  58         	  CLI
+  168                        	
+  169    00:E0E0  20 00 E1   	  JSR ClearSpritesHW		;; Clear any stray sprites so the text is not obstructed.
+  170                        	
+  171    00:E0E3             	GameEngineDone:
+  172                        	
+  173    00:E0E3  4C E3 E0   	  JMP GameEngineDone
+  174                        	
+  175    00:E0E6             	NMI:
+  176                        	
+  177    00:E0E6  40         	  RTI
+  178                        	
+  179    00:E0E7             	IRQ2:
+  180                        	
+  181    00:E0E7  40         	  RTI
+  182                        	
+  183    00:E0E8             	IRQ1:
+  184                        	
+  185    00:E0E8  40         	  RTI
+  186                        	
+  187    00:E0E9             	TIMER:
+  188                        	
+  189    00:E0E9  40         	  RTI
+  190                        	
+  191                        	;;;;;;;;;;;;;;;;;;;;;;;;;;
+  192                        	;;Clear the whole screen;;
+  193                        	;;;;;;;;;;;;;;;;;;;;;;;;;;
+  194                        	
+  195    00:E0EA             	ClearScreen:
+  196    00:E0EA  03 00      	  ST0 #$00
+  197    00:E0EC  13 00      	  ST1 #$00
+  198    00:E0EE  23 00      	  ST2 #$00
+  199                        	
+  200    00:E0F0  03 02      	  ST0 #2
+  201                        	
+  202    00:E0F2  C2         	  CLY
+  203    00:E0F3  A2 0F      	  LDX #$0F
+  204    00:E0F5  13 2F      	  ST1 #$2F
+  205    00:E0F7             	.clearscreenloop
+  206    00:E0F7  23 01      	  ST2 #$01
+  207    00:E0F9  88         	  DEY
+  208    00:E0FA  D0 FB      	  BNE .clearscreenloop
+  209    00:E0FC  CA         	  DEX
+  210    00:E0FD  10 F8      	  BPL .clearscreenloop
+  211    00:E0FF  60         	  RTS
+  212                        	
+  213                        	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  214                        	;;This clears the different sprites on the screen;;
+  215                        	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  216                        	
+  217    00:E100             	ClearSpritesHW:
+  218                        	
+  219    00:E100  64 04      	  STZ <VDC_current
+  220    00:E102  03 00      	  ST0 #$00	;; $00 = MAWR
+  221    00:E104  13 00      	  ST1 #$00
+  222    00:E106  23 7F      	  ST2 #$7F	;; Sprite data is at addy $7F00
+  223                        	
+  224    00:E108  A9 02      	  LDA #$02
+  225    00:E10A  85 04      	  STA <VDC_current
+  226    00:E10C  03 02      	  ST0 #$02	;; $02 = VWR
+  227    00:E10E  82         	  CLX
+  228    00:E10F             	.clearspritesloop		;;;;;;;;;;;;;; SPRITES LOOK LIKE THIS!!! ;;;;;;;;;;;;;;;;
+  229    00:E10F  9C 02 00   	  STZ VIDEODATA_LO		;;  
+  230    00:E112  9C 03 00   	  STZ VIDEODATA_HI		;; ------YY YYYYYYYY	Y = Y pos, X = X pos, P = Pattern addy
+  231    00:E115  E8         	  INX				;; ------XX XXXXXXXX	y = Y flip, x = X flip, C = Colour pal
+  232    00:E116  D0 F7      	  BNE .clearspritesloop		;; -----PPP PPPPPPPP	H = Height (00 = 16, 01 = 32, 11 = 64)
+  233                        					;; y-HHx--W p---CCCC	W = Width  (0 = 16, 1 = 32)
+  234                        	
+  235    00:E118  60         	  RTS
+  236                        	
+  237                        	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  238                        	;;This is our main Huffman decompression routine, outputting Huffman-compressed text to the screen!;;
+  239                        	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  240                        	
+  241    00:E119             	Decompress_Huffman:
+  242                        	
+  243    00:E119  C2         	  CLY				;; Y is the current position on HuffmanLookup, AKA the linear
+  244                        					;; hex representation of our Huffman tree.
+  245    00:E11A  80 1E      	  BRA .loadnextbyte_huffman	;; We start by loading the first byte off the text data we point to.
+  246    00:E11C             	.huffmanloop
+  247    00:E11C  8A         	  TXA				;; Grab the bit index stored in X (See below), and rotate one bit off to the left.
+  248    00:E11D  0A         	  ASL A
+  249    00:E11E             	.superhuffmanloopspecial
+  250    00:E11E  AA         	  TAX				;; Keep the current bit index in X, so we don't need to reload a variable.
+  251    00:E11F  90 07      	  BCC .nopositivebranch		;; If we hit a zero, we go to the "negative" tree branch
+  252    00:E121  B9 51 E9   	  LDA HuffmanLookup+1,y		;; This is in case of a 1 - the "positive" branch - Nodes are arrays of 2 bytes.
+  253    00:E124  30 0D      	  BMI .nexthuffmanbit		;; If the result is negative (AKA bit 7 is set), we're not at a leaf yet.
+  254    00:E126  80 05      	  BRA .foundmatch		;; If it's positive, it's a leaf, AKA a character we will decompress.
+  255    00:E128             	.nopositivebranch
+  256    00:E128  B9 50 E9   	  LDA HuffmanLookup,y		;; This is the "positive" branch, the first of the 2 bytes in a branch node.
+  257    00:E12B  30 06      	  BMI .nexthuffmanbit		;; If it's negative, it's not a leaf! Keep parsing!
+  258    00:E12D             	.foundmatch
+  259    00:E12D  20 4A E1   	  JSR ProcessFoundChar_Huffman	;; Decompressed chars are literal positive values off the tree's leaf nodes.
+  260    00:E130  30 17      	  BMI .decomp_over		;; If this subroot returns a negative value, the decompression is over!
+  261    00:E132  62         	  CLA				;; If not, go back to 0, AKA the tree's root.
+  262    00:E133             	.nexthuffmanbit
+  263    00:E133  29 7F      	  AND #$7F			;; Since negative values are the non-leaves, remove bit 7 to get the real
+  264    00:E135  A8         	  TAY				;; index of the loaded node and put that in Y.
+  265    00:E136  E0 80      	  CPX #$80			;; Check if we need to reload a new byte into the bit index
+  266    00:E138  D0 E2      	  BNE .huffmanloop		;; If not, loop
+  267    00:E13A             	.loadnextbyte_huffman
+  268    00:E13A  5A         	  PHY				;; We need to keep Y for this as it can be accessed mid-tree parse.
+  269    00:E13B  C2         	  CLY
+  270    00:E13C  B1 02      	  LDA [Decomp_PointerLo],y	;; Load the current pointer index
+  271    00:E13E  7A         	  PLY
+  272    00:E13F  E6 02      	  INC <Decomp_PointerLo		;; Advance the pointer by $0001
+  273    00:E141  D0 02      	  BNE .noinchi_decompptr
+  274    00:E143  E6 03      	  INC <Decomp_PointerHi		;; If the Low part is $00, then we must increment the High part of our pointy boi.
+  275    00:E145             	.noinchi_decompptr
+  276    00:E145  38         	  SEC				;; Set carry...
+  277    00:E146  2A         	  ROL A				;; ...Then rotate into A. That way, after rotating all of the bits out, the result
+  278    00:E147  80 D5      	  BRA .superhuffmanloopspecial	;; will be $80, and only will be when the bits are rotated out.
+  279    00:E149             	.decomp_over
+  280    00:E149  60         	  RTS				;; We're done! Bye!
+  281                        	
+  282                        	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  283                        	;;This processes a found text character within a huffman-encoded string;;
+  284                        	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  285                        	
+  286    00:E14A             	ProcessFoundChar_Huffman:
+  287    00:E14A  C9 30      	  CMP #$30		;; Check for a line break
+  288    00:E14C  F0 0C      	  BEQ .linebreak
+  289    00:E14E  C9 31      	  CMP #$31		;; Check for the string end character
+  290    00:E150  F0 21      	  BEQ .enddecomp
+  291    00:E152  8D 02 00   	  STA VIDEODATA_LO	;; This means we've hit a literal
+  292    00:E155  23 01      	  ST2 #$01		;; High byte will always be $01 in this test case.
+  293    00:E157             	.return_linebreak
+  294    00:E157  A9 69      	  LDA #$69		;; We return with a positive (and arbitrary) value: Still decompressing.
+  295    00:E159  60         	  RTS
+  296    00:E15A             	.linebreak
+  297    00:E15A  03 00      	  ST0 #$00		;; Write the post-linebreak draw index to MAWR
+  298    00:E15C  A5 00      	  LDA <DrawLo		;; Increment the draw start pointer, then return as if we drew a regular char.
+  299    00:E15E  18         	  CLC
+  300    00:E15F  69 40      	  ADC #$40		;; Since we have 2 screens across, $40 makes a line break!
+  301    00:E161  85 00      	  STA <DrawLo
+  302    00:E163  8D 02 00   	  STA VIDEODATA_LO	;; Save it not only to the soft screen position, but also to MAWR
+  303    00:E166  A5 01      	  LDA <DrawHi
+  304    00:E168  69 00      	  ADC #$00
+  305    00:E16A  85 01      	  STA <DrawHi
+  306    00:E16C  8D 03 00   	  STA VIDEODATA_HI	;; Do the required 16-bit operation!
+  307    00:E16F  03 02      	  ST0 #$02		;; Back to VWR
+  308    00:E171  80 E4      	  BRA .return_linebreak
+  309    00:E173             	.enddecomp
+  310    00:E173  A9 FF      	  LDA #$FF		;; We return with a negative value: The whole string has been decompressed.
+  311    00:E175  60         	  RTS
+  312                        	
+  313    00:E176             	background:
+  314    00:E176             	  .incbin "huffman_test_BKG.pcr"
+  315                        	
+  316    00:E776             	text1:
+  317    00:E776             	  .incbin "output/huffman_test_huffman.bin"
+  318                        	
+  319    00:E865             	text2:
+  320    00:E865             	  .incbin "output/huffman_test_2_huffman.bin"
+  321                        	
+  322    00:E930             	palette:
+  323    00:E930  00 00 40 00	  .db $00,$00,$40,$00,$88,$00,$D1,$00,$19,$01,$62,$01,$AA,$01,$F3,$01
+         00:E934  88 00 D1 00 
+         00:E938  19 01 62 01 
+         00:E93C  AA 01 F3 01 
+  324    00:E940  FD 01 50 00	  .db $FD,$01,$50,$00,$A0,$00,$31,$01,$BA,$01,$43,$00,$8C,$00,$D4,$00
+         00:E944  A0 00 31 01 
+         00:E948  BA 01 43 00 
+         00:E94C  8C 00 D4 00 
+  325                        	
+                             #[2]   "output\huffman_lookup.asm"
+  326                        	  .include "output/huffman_lookup.asm"
+    1    00:E950             	HuffmanLookup:
+    2    00:E950  82 94 84 86	  .db $82,$94,$84,$86,$1D,$0E,$88,$8A,$17,$0A,$12,$8C,$1E,$8E,$90,$92
+         00:E954  1D 0E 88 8A 
+         00:E958  17 0A 12 8C 
+         00:E95C  1E 8E 90 92 
+    3    00:E960  1F 22 25 20	  .db $1F,$22,$25,$20,$96,$9A,$98,$2F,$18,$1C,$9C,$A4,$9E,$A0,$11,$15
+         00:E964  96 9A 98 2F 
+         00:E968  18 1C 9C A4 
+         00:E96C  9E A0 11 15 
+    4    00:E970  30 A2 0D 10	  .db $30,$A2,$0D,$10,$A6,$C4,$A8,$AE,$0C,$AA,$24,$AC,$14,$0B,$B0,$0F
+         00:E974  A6 C4 A8 AE 
+         00:E978  0C AA 24 AC 
+         00:E97C  14 0B B0 0F 
+    5    00:E980  B2 B8 B4 B6	  .db $B2,$B8,$B4,$B6,$27,$21,$2A,$31,$BA,$BE,$02,$BC,$26,$13,$C0,$C2
+         00:E984  27 21 2A 31 
+         00:E988  BA BE 02 BC 
+         00:E98C  26 13 C0 C2 
+    6    00:E990  23 29 00 05	  .db $23,$29,$00,$05,$C6,$1B,$16,$19
+         00:E994  C6 1B 16 19 
+                             #[1]   "huffman_test.asm"
+  327                        	
+  328                        	;;;;;;;;;;;;;;;;;;;;;;;;;; Here be vectors
+  329                        	
+  330               FFF6     	  .org $FFF6
+  331    00:FFF6  E7 E0      	  .dw IRQ2		;; IRQ2: Electric Boogaloo! (For BRKs, external IRQs like CD-ROM stuff, etc. IIRC)
+  332    00:FFF8  E8 E0      	  .dw IRQ1		;; VDC IRQ - Hblank and Vblank gubbins
+  333    00:FFFA  E9 E0      	  .dw TIMER		;; The Timer
+  334    00:FFFC  E6 E0      	  .dw NMI		;; The good ol' NMI (Though not used apparently, unlike the NES lelelelelelel)
+  335    00:FFFE  00 E0      	  .dw RESET		;; If you don't know what that is you're even more of a boomer than I am :P
+  336                        	
+  337                        	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
